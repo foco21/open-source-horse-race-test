@@ -16,6 +16,7 @@ CELL_SIZE = WIDTH // COLS
 WHITE = (255, 255, 255)
 BLACK = (0, 0, 0)
 CARROT_COLOR = (255, 165, 0)
+BLUE = (0, 0, 255)
 
 # Window
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
@@ -42,17 +43,18 @@ horse_sprites = [
 # Horses
 horses = []
 start_positions = [[1, 1], [2, 1], [1, 2], [2, 2], [3, 1]]
-
 for i in range(len(horse_sprites)):
     horses.append({
         'pos': start_positions[i][:],
         'sprite': pygame.transform.scale(horse_sprites[i], (CELL_SIZE + 4, CELL_SIZE + 4)),
         'sprite_big': pygame.transform.scale(horse_sprites[i], (CELL_SIZE * 2, CELL_SIZE * 2)),
         'dir': random.choice([(1, 0), (-1, 0), (0, 1), (0, -1)]),
-        'attracted': False
+        'attracted': False,
+        'shield': False
     })
 
-# Functions
+# Power-ups
+shield_potions = []
 
 def create_maze():
     global maze
@@ -66,11 +68,9 @@ def create_maze():
     # Carve path to carrot
     stack = [(4, 4)]
     maze[4][4] = 0
-
     while stack:
         x, y = stack[-1]
         neighbors = []
-
         if x > 2 and maze[y][x - 2] == 1:
             neighbors.append((x - 2, y))
         if x < COLS - 3 and maze[y][x + 2] == 1:
@@ -79,7 +79,6 @@ def create_maze():
             neighbors.append((x, y - 2))
         if y < ROWS - 3 and maze[y + 2][x] == 1:
             neighbors.append((x, y + 2))
-
         if neighbors:
             nx, ny = random.choice(neighbors)
             maze[ny][nx] = 0
@@ -97,6 +96,21 @@ def create_maze():
                 if 0 <= chunk_x + dx < COLS and 0 <= chunk_y + dy < ROWS:
                     maze[chunk_y + dy][chunk_x + dx] = 0
 
+    # Place shield potions
+    shield_potions.clear()
+    for _ in range(5):
+        while True:
+            x = random.randint(5, COLS-1)
+            y = random.randint(5, ROWS-1)
+            if maze[y][x] == 0:
+                shield_potions.append([x, y])
+                break
+
+def draw_shields():
+    for x, y in shield_potions:
+        rect = pygame.Rect(x * CELL_SIZE, y * CELL_SIZE, CELL_SIZE, CELL_SIZE)
+        pygame.draw.ellipse(screen, BLUE, rect, 3)
+
 def get_valid_spawn():
     return [random.randint(1, 3), random.randint(1, 3)]
 
@@ -105,6 +119,23 @@ def is_collision(x, y, current_horse):
         if other != current_horse and other['pos'] == [x, y]:
             return True
     return False
+
+def push_horse(pushed, from_horse):
+    dx = pushed['pos'][0] - from_horse['pos'][0]
+    dy = pushed['pos'][1] - from_horse['pos'][1]
+
+    if dx != 0:
+        push_dir = (1 if dx > 0 else -1, 0)
+    elif dy != 0:
+        push_dir = (0, 1 if dy > 0 else -1)
+    else:
+        push_dir = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1)])
+
+    new_x = pushed['pos'][0] + push_dir[0]
+    new_y = pushed['pos'][1] + push_dir[1]
+
+    if (0 <= new_x < COLS and 0 <= new_y < ROWS and maze[new_y][new_x] == 0):
+        pushed['pos'] = [new_x, new_y]
 
 def move_horses():
     global frames_since_start, move_counter
@@ -126,7 +157,6 @@ def move_horses():
                 best_moves.append((0, 1))
             if horse['pos'][1] > carrot_pos[1] and maze[horse['pos'][1] - 1][horse['pos'][0]] == 0:
                 best_moves.append((0, -1))
-
             if best_moves:
                 horse['dir'] = random.choice(best_moves)
 
@@ -137,15 +167,25 @@ def move_horses():
         new_x = horse['pos'][0] + dx
         new_y = horse['pos'][1] + dy
 
-        if (not (0 <= new_x < COLS) or not (0 <= new_y < ROWS) or
-            maze[new_y][new_x] == 1 or is_collision(new_x, new_y, horse)):
+        if (not (0 <= new_x < COLS) or not (0 <= new_y < ROWS) or maze[new_y][new_x] == 1):
             horse['dir'] = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1)])
         else:
             horse['pos'][0] += dx
             horse['pos'][1] += dy
 
-        horse['pos'][0] = max(0, min(COLS - 1, horse['pos'][0]))
-        horse['pos'][1] = max(0, min(ROWS - 1, horse['pos'][1]))
+        # Pick up shield
+        if horse['pos'] in shield_potions:
+            horse['shield'] = True
+            shield_potions.remove(horse['pos'])
+
+    # Horse collision bounce if shielded
+    for i, horse1 in enumerate(horses):
+        for j, horse2 in enumerate(horses):
+            if i != j and horse1['pos'] == horse2['pos']:
+                if horse1['shield']:
+                    push_horse(horse2, horse1)
+                elif horse2['shield']:
+                    push_horse(horse1, horse2)
 
     frames_since_start += 1
 
@@ -167,6 +207,8 @@ def draw_horses():
         rect = horse['sprite'].get_rect()
         rect.topleft = (horse['pos'][0] * CELL_SIZE, horse['pos'][1] * CELL_SIZE)
         screen.blit(horse['sprite'], rect)
+        if horse['shield']:
+            pygame.draw.circle(screen, BLUE, rect.center, CELL_SIZE, 3)
 
 def check_winner():
     for index, horse in enumerate(horses):
@@ -214,28 +256,28 @@ def show_winner(horse_index, elapsed_time):
     current_round += 1
 
 # MAIN
+global frames_since_start
 frames_since_start = 0
 move_counter = 0
 rounds = 5
 current_round = 1
 horse_wins = [0 for _ in range(len(horses))]
 horse_times = []
-
 running = True
+
 while running and current_round <= rounds:
     create_maze()
     for horse in horses:
         horse['pos'] = get_valid_spawn()
         horse['dir'] = random.choice([(1, 0), (-1, 0), (0, 1), (0, -1)])
         horse['attracted'] = False
+        horse['shield'] = False
     frames_since_start = 0
     move_counter = 0
-
     round_active = True
     round_start_time = time.time()
     while round_active:
         clock.tick(60)
-
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -246,6 +288,7 @@ while running and current_round <= rounds:
         screen.fill(WHITE)
         draw_maze()
         draw_carrot()
+        draw_shields()
         draw_horses()
 
         winner_index = check_winner()
@@ -261,13 +304,10 @@ screen.fill(BLACK)
 font_big = pygame.font.SysFont(None, 50)
 end_text = font_big.render("Final Rankings", True, WHITE)
 screen.blit(end_text, (WIDTH // 2 - end_text.get_width() // 2, 50))
-
 sorted_horses = sorted(enumerate(horse_wins), key=lambda x: x[1], reverse=True)
-
 for rank, (horse_index, wins) in enumerate(sorted_horses):
     result_text = pygame.font.SysFont(None, 30).render(f"{rank+1}. Horse {horse_index+1}: {wins} wins", True, WHITE)
     screen.blit(result_text, (WIDTH // 2 - result_text.get_width() // 2, 150 + rank * 40))
-
 pygame.display.update()
 pygame.time.delay(7000)
 pygame.quit()
